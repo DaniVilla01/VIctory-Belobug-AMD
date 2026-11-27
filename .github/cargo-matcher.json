@@ -1,0 +1,28 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "victory-cargo-error",
+      "pattern": [
+        {
+          "regexp": "^(error(?:\\[E\\d+\\])?: .+)$",
+          "message": 1
+        }
+      ]
+    },
+    {
+      "owner": "victory-test-panic",
+      "pattern": [
+        {
+          "regexp": "^thread '.+'(?: \\(\\d+\\))? panicked at (.+):(\\d+):(\\d+):$",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        },
+        {
+          "regexp": "^(.+)$",
+          "message": 1
+        }
+      ]
+    }
+  ]
+}
