@@ -113,19 +113,18 @@ enum Command {
         /// Worker threads (default: every logical core).
         #[arg(long, value_parser = parse_jobs)]
         jobs: Option<usize>,
-        /// Also write every shader that does not translate to this file,
+        /// Write failed translations to a file outside the repository,
         /// one line each: hash, where it was found, why.
         #[arg(long)]
         list: Option<PathBuf>,
     },
-    /// Make the host pipelines of every pipeline the title ever created
-    /// (runs with `VICTORY_PIPELINE_BOOK=1` write them down), so that the
-    /// driver's cache on disk has them before a run needs one: once per change
-    /// of the translator or the driver. Goes on where it was stopped.
+    /// Warm the driver's cache from pipelines recorded by an earlier run
+    /// with `VICTORY_PIPELINE_BOOK=1`. Resumes for the same GPU, driver and
+    /// translator configuration.
     ///
     /// Pipelines that crash or hang the compiler are listed in `warm-bad.txt`
-    /// with the current fingerprint and retried automatically after a driver
-    /// or translator change. Set `VICTORY_WARM_BAD=0` to ignore `warm-bad.txt`
+    /// with the current fingerprint. Tagged entries are only skipped for
+    /// that fingerprint. Set `VICTORY_WARM_BAD=0` to ignore `warm-bad.txt`
     /// for this invocation.
     #[cfg(windows)]
     Warm {

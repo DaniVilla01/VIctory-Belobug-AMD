@@ -250,9 +250,11 @@ pub fn run(
     jobs: Option<usize>,
     wave: Option<u32>,
 ) -> Result<()> {
-    // Dumped shaders and validator reports are game-derived (rule #1).
-    if let Some(dir) = std::env::var_os("VICTORY_EMIT_DUMP") {
-        victory_core::ensure_outside_repo(Path::new(&dir))?;
+    // Shader dumps and diagnostic reports are game-derived (rule #1).
+    for name in ["VICTORY_EMIT_DUMP", "VICTORY_SHADER_CENSUS"] {
+        if let Some(path) = std::env::var_os(name) {
+            victory_core::ensure_outside_repo(Path::new(&path))?;
+        }
     }
     let paths = crate::default_paths(paths)?;
     let host_caps = if pipelines {
@@ -415,6 +417,9 @@ pub fn run(
 
 /// Every shader found into the cache runs translate from.
 pub fn precompile(paths: Vec<PathBuf>, jobs: Option<usize>, list: Option<PathBuf>) -> Result<()> {
+    if let Some(path) = list.as_deref() {
+        victory_core::ensure_outside_repo(path)?;
+    }
     let cfg = victory_core::Config::load()?;
     victory_hle::modules::d3d12x::use_shader_cache(cfg.cache_subdir("shaders")?);
     let paths = crate::default_paths(paths)?;

@@ -106,6 +106,7 @@ fn reports_malformed_environment_in_both_translate_modes() {
                 .current_dir(temp.path())
                 .env_remove("VICTORY_CONFIG")
                 .env_remove("VICTORY_EMIT_DUMP")
+                .env_remove("VICTORY_SHADER_CENSUS")
                 .env("VICTORY_CACHE_DIR", temp.path().join("cache"))
                 .env("VICTORY_DATA_DIR", temp.path().join("data"))
                 .env("VICTORY_HOST_WAVE", invalid)

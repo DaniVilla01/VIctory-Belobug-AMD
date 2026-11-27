@@ -3,13 +3,14 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use victory_core::Config;
 use victory_hle::known_pipelines as known;
 
 /// Pipelines a process makes before another takes its place: the compiler's
@@ -20,11 +21,6 @@ const LONGEST: Duration = Duration::from_secs(180);
 
 /// As the runs count one that takes long.
 const SLOW_MS: f64 = 1000.0;
-
-fn folder() -> Result<PathBuf> {
-    let cfg = victory_core::Config::load()?;
-    Ok(cfg.cache_subdir("shaders")?.with_file_name("pipelines"))
-}
 
 fn select_pipelines(
     keys: &[String],
@@ -50,16 +46,23 @@ fn select_pipelines(
 }
 
 pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, these: Option<String>) -> Result<()> {
-    let dir = folder()?;
+    let cfg = Config::load()?;
+    let dir = cfg.cache_dir.join("pipelines");
+    victory_core::ensure_outside_repo(&dir)?;
     if let Some(these) = these {
-        return make(&dir, &these);
+        return make(&dir, &these, &cfg);
+    }
+    let keys = known::keys(&dir)
+        .with_context(|| format!("reading recorded pipelines under {}", dir.display()))?;
+    if keys.is_empty() {
+        println!("No recorded pipelines. Run the title with VICTORY_PIPELINE_BOOK=1 first.");
+        return Ok(());
     }
     let began = Instant::now();
-    victory_hle::known_pipelines::use_translations(dir.with_file_name("shaders"));
+    known::use_translations(cfg.cache_subdir("shaders")?);
     let fingerprint = known::fingerprint();
     let done_file = dir.join("warm-done.txt");
     let bad_file = dir.join(known::WARM_BAD_FILE);
-    let keys = known::keys(&dir);
     let listed = std::fs::read_to_string(&done_file).unwrap_or_default();
     let mut done: HashSet<&str> = HashSet::new();
     for line in listed.lines() {
@@ -87,6 +90,14 @@ pub fn run(jobs: Option<usize>, limit: Option<usize>, again: bool, used: bool, t
         bad.len(),
         all.len()
     );
+    if all.is_empty() {
+        if used && !keys.iter().any(|key| early.contains(key.as_str())) {
+            println!(
+                "No recorded pipelines were marked as used. Omit --used to warm all recorded pipelines."
+            );
+        }
+        return Ok(());
+    }
     let state = Mutex::new((Vec::<f64>::new(), 0usize, 0usize));
     let done_out = Mutex::new(std::fs::OpenOptions::new().create(true).append(true).open(&done_file)?);
     // (Read back by the runs: these are made beside the others, not before.)
@@ -246,10 +257,9 @@ fn child(mut process: Child, mut each: impl FnMut(usize, f64, bool)) -> Result<O
 }
 
 /// What such a process does.
-fn make(dir: &Path, these: &str) -> Result<()> {
+fn make(dir: &Path, these: &str, cfg: &Config) -> Result<()> {
     let these: Vec<usize> = these.split(',').map(|n| n.parse().context("--these")).collect::<Result<_>>()?;
-    let cfg = victory_core::Config::load()?;
-    victory_hle::known_pipelines::use_translations(cfg.cache_subdir("shaders")?);
+    known::use_translations(cfg.cache_subdir("shaders")?);
     let mut out = std::io::stdout();
     known::make(dir, &these, |n, came| {
         let told = match came {
@@ -268,8 +278,10 @@ fn make(dir: &Path, these: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
+
+    use super::*;
 
     fn fake_child(script: &str, stdout: Stdio) -> Result<Child> {
         let cmd = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join(r"System32\cmd.exe");

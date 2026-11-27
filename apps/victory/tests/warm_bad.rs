@@ -9,6 +9,7 @@ fn run_warm(root: &Path, cache: &Path, extra_env: &[(&str, &str)], args: &[&str]
     command
         .current_dir(root)
         .env_remove("VICTORY_CONFIG")
+        .env_remove("VICTORY_AUDIO_CAPTURE")
         .env_remove("VICTORY_WARM_BAD")
         .env_remove("VICTORY_WAVE_WIDE")
         .env("VICTORY_CACHE_DIR", cache)
@@ -39,6 +40,17 @@ fn parse_fingerprint(stdout: &str) -> String {
         "non-hex fingerprint {fp:?}"
     );
     fp.to_owned()
+}
+
+#[test]
+fn warm_used_in_a_fresh_cache_explains_how_to_record_pipelines() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+
+    let output = run_warm(root.path(), &cache, &[], &["--used"]);
+    assert!(output.contains("No recorded pipelines"), "{output}");
+    assert!(output.contains("VICTORY_PIPELINE_BOOK=1"), "{output}");
+    assert!(!cache.exists(), "there is no work that needs a cache yet");
 }
 
 #[test]

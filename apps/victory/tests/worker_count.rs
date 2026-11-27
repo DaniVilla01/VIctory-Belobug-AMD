@@ -20,7 +20,8 @@ fn worker_count_is_validated_before_dispatch() {
                 .args(*args)
                 .env("VICTORY_CONFIG", &missing_config)
                 .env_remove("VICTORY_AUDIO_CAPTURE")
-                .env_remove("VICTORY_EMIT_DUMP");
+                .env_remove("VICTORY_EMIT_DUMP")
+                .env_remove("VICTORY_SHADER_CENSUS");
             if let Some(jobs) = jobs {
                 command.args(["--jobs", jobs]);
             }
