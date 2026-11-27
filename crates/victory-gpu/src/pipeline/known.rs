@@ -218,10 +218,13 @@ fn walk_shaders(dir: &Path, mut f: impl FnMut(u8, [u8; 32], u64, u32)) -> u64 {
     at
 }
 
-/// Calls `f` with each pipeline's number and entry; where the last whole one
-/// ends.
-fn walk_pipelines(dir: &Path, mut f: impl FnMut(usize, &[u8])) -> u64 {
-    let bytes = std::fs::read(dir.join(PIPELINES)).unwrap_or_default();
+fn walk_pipelines(dir: &Path, f: impl FnMut(usize, &[u8])) -> u64 {
+    walk_pipeline_records(&std::fs::read(dir.join(PIPELINES)).unwrap_or_default(), f)
+}
+
+/// Calls `f` with each pipeline's number and entry; returns the end of the
+/// last complete record.
+fn walk_pipeline_records(bytes: &[u8], mut f: impl FnMut(usize, &[u8])) -> u64 {
     let (mut at, mut n) = (0, 0);
     while let Some(head) = bytes.get(at..at + 4) {
         let size = u32::from_le_bytes([head[0], head[1], head[2], head[3]]) as usize;
@@ -240,21 +243,41 @@ pub fn count(dir: &Path) -> usize {
 }
 
 /// The key of each pipeline known in `dir`, as the early list has it.
-pub fn keys(dir: &Path) -> Vec<String> {
+/// A missing book is empty; other read errors are reported.
+pub fn keys(dir: &Path) -> std::io::Result<Vec<String>> {
+    let bytes = match std::fs::read(dir.join(PIPELINES)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        result => result?,
+    };
     let mut all = Vec::new();
-    walk_pipelines(dir, |_, e| {
+    walk_pipeline_records(&bytes, |_, e| {
         all.push(e.get(..16).unwrap_or_default().iter().map(|b| format!("{b:02x}")).collect());
     });
-    all
+    Ok(all)
 }
 
 /// What a driver's cached pipelines depend on besides the title's: the
-/// translator with its settings, and the driver.
+/// translator with its settings, the driver, and the selected adapter.
 pub fn fingerprint() -> String {
+    let translation = crate::shader_cache::translation();
+    let host = crate::host::host();
+    fingerprint_for(
+        &translation,
+        host.map_or(0, crate::host::Host::driver),
+        host.and_then(crate::host::Host::adapter_ids),
+    )
+}
+
+fn fingerprint_for(translation: &[u8; 32], driver: i64, adapter: Option<[u32; 4]>) -> String {
     let mut h = blake3::Hasher::new();
-    h.update(&crate::shader_cache::translation());
-    if let Some(host) = crate::host::host() {
-        h.update(&host.driver().to_le_bytes());
+    // Do not reuse results tagged before fingerprints identified the adapter.
+    h.update(b"victory pipeline fingerprint v2\0");
+    h.update(translation);
+    h.update(&driver.to_le_bytes());
+    if let Some(ids) = adapter {
+        for id in ids {
+            h.update(&id.to_le_bytes());
+        }
     }
     h.finalize().to_hex()[..16].to_owned()
 }
@@ -269,8 +292,8 @@ fn is_hex(s: &str, len: usize) -> bool {
 }
 
 /// Formats a `warm-bad.txt` entry with the pipeline key in column one (so
-/// older binaries still quarantine the key) and a tagged fingerprint so
-/// driver or translator updates retry it automatically.
+/// older binaries still quarantine the key) and a tagged fingerprint so a
+/// change of adapter, driver or translator retries it automatically.
 pub fn format_bad_entry(key: &str, fingerprint: &str, reason: &str) -> String {
     if reason.is_empty() {
         format!("{key} fp={fingerprint}")
@@ -284,8 +307,8 @@ pub fn format_bad_entry(key: &str, fingerprint: &str, reason: &str) -> String {
 /// Blank lines and `#` comments are ignored. Entries tagged with a
 /// fingerprint (`<key> fp=<16-hex-fingerprint> ...`, or
 /// `<16-hex-fingerprint> <32-hex-key> ...`) apply only when their
-/// fingerprint matches `fingerprint`, so a driver or translator update
-/// automatically retries them. Legacy or manually added bare-key lines
+/// fingerprint matches `fingerprint`, so a different adapter, driver or
+/// translator may retry them. Legacy or manually added bare-key lines
 /// (`<key> ...`) continue to apply regardless of fingerprint.
 pub fn parse_bad_keys(text: &str, fingerprint: &str) -> HashSet<String> {
     let mut keys = HashSet::new();
@@ -632,6 +655,27 @@ mod tests {
         assert_eq!(walk_shaders(&dir, |stage, hash, at, len| seen.push((stage, hash[0], at, len))), one);
         assert_eq!(seen, [(5, 9, 37, 4)]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reading_keys_distinguishes_a_missing_book_from_a_read_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(keys(temp.path()).unwrap().is_empty());
+        std::fs::create_dir(temp.path().join(PIPELINES)).unwrap();
+        assert!(keys(temp.path()).is_err());
+    }
+
+    #[test]
+    fn a_warm_failure_does_not_follow_a_different_adapter() {
+        let translation = [0; 32];
+        let first = fingerprint_for(&translation, 1, Some([0x1002, 0x744c, 0, 0]));
+        let second = fingerprint_for(&translation, 1, Some([0x1002, 0x7550, 0, 0]));
+        assert_ne!(first, second);
+
+        let key = "a".repeat(32);
+        let note = format_bad_entry(&key, &first, "compiler refused");
+        assert!(parse_bad_keys(&note, &first).contains(&key));
+        assert!(parse_bad_keys(&note, &second).is_empty());
     }
 
     #[test]

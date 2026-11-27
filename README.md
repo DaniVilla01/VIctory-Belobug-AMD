@@ -85,32 +85,41 @@ What is known to be wrong:
 
 ## How to run it
 
-You need Windows 10/11 x64, a CPU with AVX2, a Direct3D 12 GPU with shader
-model 6.6 and mesh shaders, Rust (the toolchain is pinned), the MSVC build
-tools, and your own dump of the title.
+Use Windows 11 x64, a CPU with AVX2, a Direct3D 12 GPU with Shader Model 6.6
+and mesh shaders, the pinned Rust toolchain, the MSVC build tools, and your
+own dump of the title. The D3D12 runtime that ships with Windows 10 can
+reject directly indexed descriptor heaps even on capable GPUs.
 
 ```powershell
-git clone https://github.com/avatarmanz/VIctory-7900XTX
-cd VIctory-7900XTX
-copy victory.example.toml victory.toml      # then set your paths, outside this folder
+git clone https://github.com/DaniVilla01/VIctory-Belobug-AMD.git
+Set-Location VIctory-Belobug-AMD
+Copy-Item victory.example.toml victory.toml  # Edit the paths to point outside this checkout.
 cargo build --locked --profile diag -p victory --features diagnostics
-scripts\play.ps1 -Exe <path of your copy's executable>
+.\target\diag\victory.exe config
+.\scripts\play.ps1 -Exe 'D:\path\to\your\game.exe'
 ```
+
+If upgrading, keep `victory.toml` and back up `[paths].data_dir` first (default
+`%LOCALAPPDATA%\victory\data`). It holds your saves and must be kept separate
+from the rebuildable cache. If a legacy save cannot be read or differs from
+a versioned copy, the migration keeps the original and logs a warning.
 
 The launcher requests light device removal diagnostics (DRED) by default with
 `-Build diag`. DRED requires `--features diagnostics`. For a release binary
 built with that feature, request DRED with
 `-Build release -More @{VICTORY_D3D12_DRED='light'}`.
 
-`scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
-something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
+Try `.\scripts\play.ps1 -Safe` if you encounter rendering issues. It disables
+some experimental renderer paths; it is not a sandbox. Run as a normal user
+and use only executable and DLL files you trust. `-RayTracing` enables the
+title's ray-traced indirect lighting.
 
 For PC FSR 4.1.2, set `[paths].fidelityfx_dir` in `victory.toml` or
 `VICTORY_FIDELITYFX_DIR` to the folder containing AMD's signed
 `amd_fidelityfx_upscaler_dx12.dll`. Use the DirectX 12 upscaler in
 `Kits/FidelityFX/signedbin`. [AMD FSR SDK 2.4.0](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v2.4.0/Kits/FidelityFX/signedbin)
 
-`scripts\play.ps1 -Exe <path> -Fsr4K quality` selects 2560×1440 input for
+`.\scripts\play.ps1 -Exe <path> -Fsr4K quality` selects 2560×1440 input for
 the retail 1.0.2.1 Series X 4K SDR profile. `balanced` selects 2258×1270
 and `performance` selects 1920×1080. All three output 3840×2160. With
 `victory run` directly, set `VICTORY_FSR_4K` to the preset name.
@@ -129,12 +138,29 @@ name, PCI vendor and device IDs, and dedicated VRAM. Set
 name to select it explicitly. With the launcher, pass
 `-More @{VICTORY_D3D12_ADAPTER='NVIDIA'}`.
 
-Before the first run, ahead of time (both can be stopped and go on later):
+### Warming shaders and pipelines
+
+Before the first launch, you can translate shaders in advance. This scans
+the configured game directory by default; pass specific shader archives to
+limit the scan. If you use `--list <file>`, put the report outside the checkout.
 
 ```powershell
-target\diag\victory.exe shaders <the shader archives>   # every shader translated, minutes
-target\diag\victory.exe warm --used                     # pipelines earlier runs drew with, for a new driver or build
+.\target\diag\victory.exe shaders
 ```
+
+`warm` needs a pipeline catalog from an earlier run. Play once with
+`VICTORY_PIPELINE_BOOK=1` and exit normally before warming that catalog:
+
+```powershell
+.\scripts\play.ps1 -Exe 'D:\path\to\your\game.exe' -More @{VICTORY_PIPELINE_BOOK='1'}
+.\target\diag\victory.exe warm --used
+```
+
+Omit `--used` to warm all recorded pipelines. Use the same GPU and shader
+settings as when you play. Warming resumes for the same adapter model,
+driver and translator settings. After this upgrade, checkpoints and tagged
+failures from the old fingerprint format are not reused; untagged entries
+in `warm-bad.txt` still apply across adapters.
 
 Commands, debugging switches and upstream's own description:
 [docs/README-fxceless.md](docs/README-fxceless.md). Every `VICTORY_...` switch is

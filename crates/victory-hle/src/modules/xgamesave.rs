@@ -20,7 +20,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use std::ffi::{CString, c_char, c_void};
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -323,41 +323,76 @@ fn containers(root: &Path) -> Vec<(String, PathBuf)> {
             if let Ok(Some(v)) = current(&path) {
                 out.push((v.name, path));
             }
-        } else if let Some(name) = decode(&file)
-            && let Some(dir) = migrate(root, &name, &path)
-        {
-            out.push((name, dir));
+        } else if let Some(name) = decode(&file) {
+            match migrate(root, &name, &path) {
+                Ok(dir) => out.push((name, dir)),
+                Err(error) => tracing::warn!(
+                    container = %name,
+                    path = %path.display(),
+                    %error,
+                    "legacy game save migration did not complete"
+                ),
+            }
         }
     }
     out.sort();
+    out.dedup();
     out
 }
 
 /// Moves a container of the old layout (blob files named by encoded name,
-/// a `.display` file) into a committed version, then removes it.
-fn migrate(root: &Path, name: &str, old: &Path) -> Option<PathBuf> {
+/// an optional `.display` file) into a committed version. Never remove the
+/// original on a read or commit error, or when an existing copy differs.
+fn migrate(root: &Path, name: &str, old: &Path) -> io::Result<PathBuf> {
     let dir = container_dir(root, name);
-    let done = current_named(&dir, name).ok()?.is_some(); // a crash after the commit
-    if !done {
-        let display = std::fs::read_to_string(old.join(".display")).unwrap_or_default();
-        let mut blobs: Vec<(String, Vec<u8>)> = std::fs::read_dir(old)
-            .ok()?
-            .flatten()
-            .filter_map(|e| {
-                let blob = decode(e.file_name().to_str()?)?;
-                Some((blob, std::fs::read(e.path()).ok()?))
-            })
-            .collect();
-        blobs.sort();
+    let display = match std::fs::read_to_string(old.join(".display")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        result => result?,
+    };
+    let mut blobs = Vec::new();
+    for entry in std::fs::read_dir(old)? {
+        let entry = entry?;
+        if let Some(blob) = entry.file_name().to_str().and_then(decode) {
+            blobs.push((blob, std::fs::read(entry.path())?));
+        }
+    }
+    blobs.sort();
+
+    let version = match current(&dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        result => result?,
+    };
+    if let Some(version) = version {
+        // A crash may have left the original after a commit. Verify the
+        // copy before cleaning up: it could also be an earlier partial
+        // migration or a newer save with different data.
+        let differs = || {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the versioned save differs from the legacy save; the original was kept",
+            )
+        };
+        if version.name != name
+            || version.display != display
+            || !version.blobs.iter().eq(blobs.iter().map(|(name, _)| name))
+        {
+            return Err(differs());
+        }
+        for (i, (_, bytes)) in blobs.iter().enumerate() {
+            if std::fs::read(version.blob(i))?.as_slice() != bytes.as_slice() {
+                return Err(differs());
+            }
+        }
+    } else {
         let sources: Vec<_> = blobs
             .iter()
             .map(|(n, d)| (n.as_str(), Source::Data(d)))
             .collect();
-        commit(&dir, 1, name, &display, &sources).ok()?;
+        commit(&dir, 1, name, &display, &sources)?;
     }
-    std::fs::remove_dir_all(old).ok()?;
+    std::fs::remove_dir_all(old)?;
     tracing::info!(container = name, "game save moved to the versioned layout");
-    Some(dir)
+    Ok(dir)
 }
 
 fn used_bytes(root: &Path) -> u64 {
@@ -1210,6 +1245,58 @@ mod tests {
         );
         let v = current_named(&c.dir, "Player").unwrap().unwrap();
         assert_eq!((v.dir.file_name(), v.display.as_str()), (Some("v1".as_ref()), "Chapter 1"));
+    }
+
+    #[test]
+    fn a_legacy_read_error_leaves_the_save_intact_for_a_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let old = root.join("Slot");
+        let blocked = old.join("b");
+        // A directory at a blob's path reliably fails a file read on every host.
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(old.join("a"), b"first").unwrap();
+
+        assert!(migrate(root, "Slot", &old).is_err());
+        assert_eq!(std::fs::read(old.join("a")).unwrap(), b"first");
+        assert!(blocked.is_dir());
+        assert!(!container_dir(root, "Slot").exists());
+
+        std::fs::remove_dir(&blocked).unwrap();
+        std::fs::write(&blocked, b"second").unwrap();
+        migrate(root, "Slot", &old).unwrap();
+        assert!(!old.exists());
+        let (_, blobs) = state(root).unwrap();
+        assert_eq!(
+            blobs,
+            [
+                ("a".to_owned(), "first".to_owned()),
+                ("b".to_owned(), "second".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_only_cleans_up_a_verified_duplicate() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let old = root.join("Slot");
+        let dir = container_dir(root, "Slot");
+        let committed = dir.join("v1").join("0");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::write(old.join("a"), b"original").unwrap();
+        commit(&dir, 1, "Slot", "", &[("a", Source::Data(b"committed"))]).unwrap();
+
+        let error = migrate(root, "Slot", &old).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(old.join("a")).unwrap(), b"original");
+        assert_eq!(std::fs::read(&committed).unwrap(), b"committed");
+
+        // Like a crash just after commit, with an identical original still there.
+        std::fs::write(old.join("a"), b"committed").unwrap();
+        assert_eq!(migrate(root, "Slot", &old).unwrap(), dir);
+        assert!(!old.exists());
+        assert_eq!(std::fs::read(&committed).unwrap(), b"committed");
     }
 
     /// An empty configuration id names none. As a folder name it would be

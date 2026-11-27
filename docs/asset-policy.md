@@ -38,7 +38,13 @@ accepted.
 
 Outside the repository, configured in `victory.toml`: `game_dir` (the
 user's dump), `test_titles`, and `cache_dir` for everything derived
-(default `%LOCALAPPDATA%\victory\cache`).
+(default `%LOCALAPPDATA%\victory\cache`). Save data lives separately in
+`data_dir`; back it up rather than treating it as cache.
+
+Use external paths for optional diagnostic outputs too: the report from
+`victory shaders --list <file>` and the `VICTORY_EMIT_DUMP` directory and
+`VICTORY_SHADER_CENSUS` report used by `victory translate` are checked before
+scanning. Reports can contain local paths; review them before sharing.
 
 ## Enforcement
 
