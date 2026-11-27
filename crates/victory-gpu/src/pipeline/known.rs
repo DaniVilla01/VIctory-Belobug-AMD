@@ -642,7 +642,7 @@ mod tests {
         }
         std::fs::write(dir.join(PIPELINES), &bytes[..bytes.len() - 5]).unwrap();
         assert_eq!(count(&dir), 2);
-        assert_eq!(keys(&dir)[1], "01".repeat(16));
+        assert_eq!(keys(&dir).unwrap(), ["00".repeat(16), "01".repeat(16)]);
         assert_eq!(walk_pipelines(&dir, |_, _| ()), 48);
         let mut shader = vec![5u8];
         shader.extend([9; 32]);
